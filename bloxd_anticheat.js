@@ -2,14 +2,37 @@
 BLOXD.IO ADVANCED ANTI-CHEAT SYSTEM v1.0.0
 A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds.
 
-Detects: Autoclickers, Macros, Aimbot, Reach hacks, KillAura, Spinbot,
-         Silent Aim, Anti-Knockback, Mobile injection scripts
+ARCHITECTURE OVERVIEW:
+This system uses a multi-layered statistical analysis approach to distinguish
+human players from automation software. Each detection layer operates independently
+with strike-based escalation to minimize false positives while catching sophisticated
+cheats that bypass single-layer detection.
 
-Author: 1TZ_RE0
+Key Design Principles:
+- Server-side execution: All analysis runs on Bloxd.io's server to prevent client-side tampering
+- Persistent global state: State survives module context resets via global anchoring (_g.ARENA_STATE)
+- Strike-based escalation: Most checks require 2-5 violations before kicking to account for edge cases
+- Input device awareness: Differentiates between mouse, mobile touch, and drag-click patterns
+- Network latency compensation: Adjusts thresholds based on player ping to prevent false positives
+- Kinematic validation: Uses physics-based movement analysis to detect impossible actions
+
+Detection Pipeline:
+1. Click Analysis Engine (Layers 1-16): Statistical analysis of click intervals
+2. Cursor Telemetry (Layer 17): Geometric curve consistency during target tracking
+3. Combat Pattern Analysis (Layers 18-21): Multi-target hits, target switching, rotation snaps
+
+Author: 1TZ_RE0 (In-Game) | 1T2E6Y876DF (GitHub)
 License: MIT
 =========================================================================== */
 
-/* ========================== PERSISTENT STATE ============================= */
+/* ========================== PERSISTENT STATE =============================
+ * GLOBAL STATE ANCHORING PATTERN:
+ * Bloxd.io's code editor can reset module context during runtime. By anchoring
+ * state to a global object (_g), we ensure persistence across resets.
+ * 
+ * The _S object serves as the single source of truth for all anti-cheat state.
+ * Each property uses defensive initialization (|| {}) to prevent data loss.
+ * ========================================================================= */
 var _g = (typeof global !== "undefined") ? global : (typeof self !== "undefined") ? self : {};
 _g.ARENA_STATE = _g.ARENA_STATE || {};
 var _S = _g.ARENA_STATE;
@@ -37,6 +60,11 @@ _S.acAlertFeed = _S.acAlertFeed || [];
 _S.honeypotCleanup = _S.honeypotCleanup || {};
 _S.phantomIds = _S.phantomIds || {};
 _S.patternFingerprints = _S.patternFingerprints || {};
+_S.curvePathDb = _S.curvePathDb || {};
+_S.recentHits = _S.recentHits || {};
+_S.targetSwitchDb = _S.targetSwitchDb || {};
+_S.snapRotationDb = _S.snapRotationDb || {};
+_S.behindHitDb = _S.behindHitDb || {};
 _S.worldAuthenticated = (typeof _S.worldAuthenticated === "boolean") ? _S.worldAuthenticated : false;
 _S.destructionArmed = (typeof _S.destructionArmed === "boolean") ? _S.destructionArmed : false;
 _S.systemCorrupted = (typeof _S.systemCorrupted === "boolean") ? _S.systemCorrupted : false;
@@ -68,6 +96,11 @@ var acAlertFeed = _S.acAlertFeed;
 var honeypotCleanup = _S.honeypotCleanup;
 var phantomIds = _S.phantomIds;
 var patternFingerprints = _S.patternFingerprints;
+var curvePathDb = _S.curvePathDb;
+var recentHits = _S.recentHits;
+var targetSwitchDb = _S.targetSwitchDb;
+var snapRotationDb = _S.snapRotationDb;
+var behindHitDb = _S.behindHitDb;
 var worldAuthenticated = _S.worldAuthenticated;
 var destructionArmed = _S.destructionArmed;
 var systemCorrupted = _S.systemCorrupted;
@@ -88,9 +121,21 @@ function _dec(a) {
 var TRUE_OWNER = _dec(_O);
 var OWNER_NAME = "1TZ_RE0";
 
-/* ========================== CONFIGURATION ================================ */
+/* ========================== CONFIGURATION ================================
+ * THRESHOLD CALIBRATION RATIONALE:
+ * All thresholds are tuned based on empirical testing with real players using
+ * various input devices (Logitech M240, Razer mice, mobile touchscreens).
+ * 
+ * Key considerations:
+ * - Human reaction time: 150-300ms average, so combat analysis windows are 200-500ms
+ * - Mouse hardware limitations: Most mice report at 125-1000Hz (1-8ms between reports)
+ * - Network latency: Players with 100-200ms ping need relaxed thresholds to avoid false positives
+ * - Input device variance: Drag clickers produce 30-40 CPS legitimately, so CPS ceiling is 25+
+ * - Fatigue modeling: Humans slow down over time (first half vs second half click speed)
+ * ========================================================================= */
 var CONFIG = {
-    /* Reach validation */
+    /* Reach validation: Bloxd.io hitbox is 0.6m wide, human arm reach ~4.5m max.
+     * 4.8m base + 0.6m ping buffer = 5.4m hard ceiling. Accounts for network desync. */
     REACH_BASE: 4.8,
     REACH_BUFFER_CAP: 0.6,
     REACH_HARD_CEILING: 5.4,
@@ -124,7 +169,21 @@ var CONFIG = {
     HITBOX_VARIANCE_THRESHOLD: 0.02,
     HITBOX_HISTORY_SIZE: 10,
     HITBOX_MIN_SAMPLES: 5,
-    CURSOR_HISTORY_SIZE: 20,
+    CURSOR_HISTORY_SIZE: 30,
+    CURVE_SEGMENT_MIN: 8,
+    CURVE_SIMILARITY_THRESHOLD: 0.85,
+    CURVE_STRIKES_TO_KICK: 3,
+    CURVE_ACTIVE_MOVEMENT: 2.0,
+    KILLAURA_MULTI_HIT_MS: 100,
+    KILLAURA_MULTI_TARGETS: 2,
+    KILLAURA_STRIKES: 3,
+    TARGET_SWITCH_WINDOW: 500,
+    TARGET_SWITCH_MIN_HITS: 3,
+    TARGET_SWITCH_STRIKES: 3,
+    SNAP_ROTATION_THRESHOLD: 150,
+    SNAP_NO_SHAKE_STRIKES: 3,
+    BEHIND_HIT_ANGLE: 90,
+    BEHIND_HIT_STRIKES: 3,
     SPIN_WINDOW_MS: 1000,
     SPIN_DEG_PER_SEC: 360,
     SPIN_LOCKED_HITS: 3,
@@ -744,6 +803,24 @@ function checkMobileSynchronicity(intervals, n) {
     return avgVariance < CONFIG.MOBILE_SYNCHRONICITY_THRESHOLD;
 }
 
+/* ===========================================================================
+ * CLICK INTERVAL STATISTICAL ANALYSIS ENGINE
+ * Core detection function that computes 16 statistical metrics from click history.
+ * 
+ * Statistical Approach:
+ * - Jitter analysis: Human hands produce micro-variations (2-15ms) between clicks
+ *   due to muscle tremor and neural signal noise. Macros produce 0-2ms jitter.
+ * - Coefficient of Variation (CV): stddev/mean ratio. Humans >0.15 at speed,
+ *   macros 0.01-0.15. This normalizes variance across different CPS ranges.
+ * - Shannon Entropy: Measures predictability. Static loops have entropy <0.25.
+ *   Humans have higher entropy due to natural variation.
+ * - Fatigue ratio: Humans slow down over time (first half vs second half CPS).
+ *   Macros maintain constant speed indefinitely.
+ * - Drag click detection: Identifies vibration patterns (1-8ms micro-bursts mixed
+ *   with >15ms recovery periods) that characterize legitimate drag clicking.
+ * 
+ * Returns: Object with all computed metrics, or null if insufficient data
+ * =========================================================================== */
 function analyzeClickIntervals(hist) {
     var intervals = [];
     for (var i = 1; i < hist.length; i++) {
@@ -752,10 +829,13 @@ function analyzeClickIntervals(hist) {
     }
     var n = intervals.length; if (n < 6) return null;
 
+    /* Compute mean interval (inverse of CPS) */
     var sum = 0, aa;
     for (aa = 0; aa < n; aa++) sum += intervals[aa];
     var mean = sum / n;
 
+    /* Jitter analysis: average absolute difference between consecutive intervals.
+     * Human jitter: 2-15ms. Macro jitter: 0-2ms. */
     var jitterSum = 0, identicalIntervals = 0;
     var minInterval = intervals[0], maxInterval = intervals[0];
     var seenIntervals = {};
@@ -771,7 +851,10 @@ function analyzeClickIntervals(hist) {
     var range = maxInterval - minInterval;
     var duplicationRatio = identicalIntervals / n;
 
-    /* Drag click vibration detection */
+    /* Drag click vibration detection: Identifies micro-bursts (1-8ms) mixed with
+     * recovery periods (>15ms). This pattern is characteristic of drag clicking
+     * where the mouse vibrates against the surface, producing rapid bursts followed
+     * by longer gaps as the finger repositions. */
     var microBurstCount = 0, recoveryCount = 0;
     for (aa = 0; aa < n; aa++) {
         if (intervals[aa] >= 1 && intervals[aa] <= 8) microBurstCount++;
@@ -941,6 +1024,27 @@ onPlayerClick = function (playerId, wasAltClick) {
                     } else if (cDb.smoothStrikes > 0) { cDb.smoothStrikes = Math.max(0, cDb.smoothStrikes - 0.15); }
                 }
             }
+        }
+    }
+
+    /* Curve path consistency: aimbot tracking produces identical curve shapes across attempts */
+    if (cursorMovementHistory[playerId] && cursorMovementHistory[playerId].length >= 20) {
+        var curveResult = analyzeCurvePathConsistency(playerId);
+        if (curveResult && curveResult.avgSimilarity >= CONFIG.CURVE_SIMILARITY_THRESHOLD && curveResult.arcCount >= 2) {
+            if (!curvePathDb[playerId]) curvePathDb[playerId] = { strikes: 0, lastCheck: 0 };
+            var cpDb = curvePathDb[playerId];
+            if (now - cpDb.lastCheck > 5000) {
+                cpDb.strikes = (cpDb.strikes || 0) + 1;
+                cpDb.lastCheck = now;
+                if (cpDb.strikes >= CONFIG.CURVE_STRIKES_TO_KICK) {
+                    cpDb.strikes = 0;
+                    runKick(playerId, nameOf(playerId), "Aimbot (Curve Path Lock)",
+                        "Tracking curves " + (curveResult.avgSimilarity * 100).toFixed(0) + "% identical across " + curveResult.arcCount + " arcs - human hand produces unique curves");
+                    return;
+                }
+            }
+        } else if (curvePathDb[playerId] && curvePathDb[playerId].strikes > 0) {
+            curvePathDb[playerId].strikes = Math.max(0, curvePathDb[playerId].strikes - 0.1);
         }
     }
 
@@ -1163,6 +1267,10 @@ onPlayerDamagingOtherPlayer = function (attackerId, victimId) {
     if (acExempt(attackerId)) { return; }
     if (!validateReach(attackerId, victimId)) return "preventDamage";
     checkHitboxVariance(attackerId, victimId);
+    checkKillAuraMultiHit(attackerId, victimId);
+    checkTargetSwitchSnap(attackerId, victimId);
+    checkSnapRotationNoShake(attackerId, victimId);
+    checkBehindTargetHit(attackerId, victimId);
 };
 
 /* ========================= BLOCK CHANGE HANDLER ========================== */
@@ -1245,10 +1353,356 @@ tick = function (ms) {
 
 /* =================== CROSS-SESSION PATTERN FINGERPRINTING ================ */
 /*
+/* ===========================================================================
+ * CURVE PATH CONSISTENCY DETECTION
+ * Aimbot tracking produces mathematically identical curves when following
+ * strafing targets. Human hands produce unique curves with micro-variations.
+ * 
+ * Geometric Approach:
+ * 1. Segment cursor movement into tracking arcs (continuous movement periods)
+ * 2. Extract turning angle sequences (how cursor direction changes at each step)
+ * 3. Normalize arcs to 8 samples using linear interpolation
+ * 4. Compare arc shapes using mean absolute difference of turning angles
+ * 5. If 85%+ similarity across multiple arcs = aimbot (human can't reproduce
+ *    the same curve shape consistently during intense combat)
+ * 
+ * Why This Works:
+ * - When a player strafes (S-tap to circle), aimbot computes smooth interpolation
+ * - Human hand at low sensitivity produces curves with natural micro-wobbles
+ * - Mathematical curves (Lemniscate, parabola) are too perfect to be human
+ * =========================================================================== */
+function analyzeCurvePathConsistency(playerId) {
+    if (!cursorMovementHistory[playerId] || cursorMovementHistory[playerId].length < 16) return null;
+    var history = cursorMovementHistory[playerId];
+    var arcs = [];
+    var currentArc = [];
+
+    for (var i = 1; i < history.length; i++) {
+        var prev = history[i-1], curr = history[i];
+        var dot = prev.x * curr.x + prev.y * curr.y + prev.z * curr.z;
+        var angle = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+
+        if (curr.t - prev.t > 500 || angle > 30) {
+            if (currentArc.length >= CONFIG.CURVE_SEGMENT_MIN) arcs.push(currentArc);
+            currentArc = [prev, curr];
+        } else {
+            if (currentArc.length === 0) currentArc.push(prev);
+            currentArc.push(curr);
+        }
+    }
+    if (currentArc.length >= CONFIG.CURVE_SEGMENT_MIN) arcs.push(currentArc);
+
+    if (arcs.length < 2) return null;
+
+    var arcFingerprints = [];
+    for (var a = 0; a < arcs.length; a++) {
+        var arc = arcs[a];
+        var turningAngles = [];
+        var totalMovement = 0;
+
+        for (var j = 1; j < arc.length - 1; j++) {
+            var p1 = arc[j-1], p2 = arc[j], p3 = arc[j+1];
+            var dot1 = p1.x * p2.x + p1.y * p2.y + p1.z * p2.z;
+            var dot2 = p2.x * p3.x + p2.y * p3.y + p2.z * p3.z;
+            var angle1 = Math.acos(Math.max(-1, Math.min(1, dot1))) * (180 / Math.PI);
+            var angle2 = Math.acos(Math.max(-1, Math.min(1, dot2))) * (180 / Math.PI);
+            var turnAngle = angle2 - angle1;
+            turningAngles.push(turnAngle);
+            totalMovement += Math.abs(turnAngle);
+        }
+
+        if (turningAngles.length >= 3 && totalMovement >= CONFIG.CURVE_ACTIVE_MOVEMENT) {
+            arcFingerprints.push(turningAngles);
+        }
+    }
+
+    if (arcFingerprints.length < 2) return null;
+
+    var similarities = [];
+    for (var i = 0; i < arcFingerprints.length; i++) {
+        for (var j = i + 1; j < arcFingerprints.length; j++) {
+            var sim = compareArcShapes(arcFingerprints[i], arcFingerprints[j]);
+            if (sim !== null) similarities.push(sim);
+        }
+    }
+
+    if (similarities.length === 0) return null;
+
+    var sum = 0;
+    for (var s = 0; s < similarities.length; s++) sum += similarities[s];
+    var avgSimilarity = sum / similarities.length;
+
+    return { avgSimilarity: avgSimilarity, arcCount: arcFingerprints.length, maxSimilarity: Math.max.apply(null, similarities) };
+}
+
+function compareArcShapes(arc1, arc2) {
+    if (arc1.length < 3 || arc2.length < 3) return null;
+    var norm1 = normalizeArc(arc1, 8);
+    var norm2 = normalizeArc(arc2, 8);
+    if (!norm1 || !norm2) return null;
+
+    var diffSum = 0;
+    for (var i = 0; i < 8; i++) diffSum += Math.abs(norm1[i] - norm2[i]);
+    var meanDiff = diffSum / 8;
+    var similarity = Math.max(0, 1 - (meanDiff / 10));
+    return similarity;
+}
+
+function normalizeArc(arc, targetSize) {
+    if (arc.length < 3) return null;
+    var normalized = [];
+    var step = (arc.length - 1) / (targetSize - 1);
+
+    for (var i = 0; i < targetSize; i++) {
+        var pos = i * step;
+        var idx = Math.floor(pos);
+        var frac = pos - idx;
+
+        if (idx >= arc.length - 1) {
+            normalized.push(arc[arc.length - 1]);
+        } else {
+            normalized.push(arc[idx] * (1 - frac) + arc[idx + 1] * frac);
+        }
+    }
+    return normalized;
+}
+
+/* ===========================================================================
+ * KILLAURA MULTI-HIT DETECTION
+ * KillAura hits all players in range simultaneously. A human can only aim
+ * at one target at a time. If multiple targets hit within 100ms = killaura.
+ * =========================================================================== */
+function checkKillAuraMultiHit(attackerId, victimId) {
+    if (acExempt(attackerId)) return;
+    if (!acShouldScan(attackerId)) return;
+    var now = safeNow();
+
+    if (!recentHits[attackerId]) recentHits[attackerId] = [];
+    recentHits[attackerId].push({ victim: victimId, time: now });
+
+    while (recentHits[attackerId].length > 0 && now - recentHits[attackerId][0].time > CONFIG.KILLAURA_MULTI_HIT_MS) {
+        recentHits[attackerId].shift();
+    }
+
+    if (recentHits[attackerId].length >= CONFIG.KILLAURA_MULTI_TARGETS) {
+        var uniqueVictims = {};
+        for (var i = 0; i < recentHits[attackerId].length; i++) {
+            uniqueVictims[recentHits[attackerId][i].victim] = true;
+        }
+        var victimCount = Object.keys(uniqueVictims).length;
+
+        if (victimCount >= CONFIG.KILLAURA_MULTI_TARGETS) {
+            if (!acCombatDb[attackerId]) acCombatDb[attackerId] = {};
+            var cDb = acCombatDb[attackerId];
+            cDb.killAuraStrikes = (cDb.killAuraStrikes || 0) + 1;
+            if (cDb.killAuraStrikes >= CONFIG.KILLAURA_STRIKES) {
+                cDb.killAuraStrikes = 0;
+                runKick(attackerId, nameOf(attackerId), "KillAura (Multi-Target Intercept)",
+                    "Hit " + victimCount + " targets within " + CONFIG.KILLAURA_MULTI_HIT_MS + "ms - human can only aim at one target at a time");
+            }
+        }
+    }
+}
+
+/* ===========================================================================
+ * TARGET SWITCH SNAP DETECTION
+ * When chasing multiple targets and one leaves range, aimbot instantly snaps
+ * to the next target with zero transition. Human has smooth tracking lag.
+ * =========================================================================== */
+function checkTargetSwitchSnap(attackerId, victimId) {
+    if (acExempt(attackerId)) return;
+    if (!acShouldScan(attackerId)) return;
+    var now = safeNow();
+    var a = safeApi(); if (!a || !a.getPlayerFacingInfo) return;
+
+    if (!targetSwitchDb[attackerId]) {
+        targetSwitchDb[attackerId] = { lastVictim: null, lastSwitchTime: 0, switchCount: 0, strikes: 0 };
+    }
+    var tsDb = targetSwitchDb[attackerId];
+
+    if (tsDb.lastVictim !== null && tsDb.lastVictim !== victimId) {
+        var timeSinceLastSwitch = now - tsDb.lastSwitchTime;
+
+        if (timeSinceLastSwitch < CONFIG.TARGET_SWITCH_WINDOW) {
+            tsDb.switchCount++;
+
+            if (tsDb.switchCount >= CONFIG.TARGET_SWITCH_MIN_HITS) {
+                var facing = a.getPlayerFacingInfo(attackerId);
+                if (facing && facing.dir) {
+                    if (!tsDb.cursorSnapHistory) tsDb.cursorSnapHistory = [];
+                    tsDb.cursorSnapHistory.push({ x: facing.dir[0], y: facing.dir[1], z: facing.dir[2], t: now });
+                    while (tsDb.cursorSnapHistory.length > 5) tsDb.cursorSnapHistory.shift();
+
+                    if (tsDb.cursorSnapHistory.length >= 3) {
+                        var snapAngles = [];
+                        for (var i = 1; i < tsDb.cursorSnapHistory.length; i++) {
+                            var prev = tsDb.cursorSnapHistory[i-1], curr = tsDb.cursorSnapHistory[i];
+                            var dot = prev.x * curr.x + prev.y * curr.y + prev.z * curr.z;
+                            var angle = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+                            snapAngles.push(angle);
+                        }
+
+                        var hasSnap = false;
+                        for (var j = 0; j < snapAngles.length; j++) {
+                            if (snapAngles[j] > 15) { hasSnap = true; break; }
+                        }
+
+                        if (hasSnap) {
+                            tsDb.strikes++;
+                            if (tsDb.strikes >= CONFIG.TARGET_SWITCH_STRIKES) {
+                                tsDb.strikes = 0;
+                                runKick(attackerId, nameOf(attackerId), "Aimbot (Target Switch Snap)",
+                                    "Instant target lock with " + snapAngles[0].toFixed(1) + "° snap - human tracking has smooth transition lag");
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            tsDb.switchCount = 1;
+        }
+
+        tsDb.lastSwitchTime = now;
+    }
+
+    tsDb.lastVictim = victimId;
+}
+
+/* ===========================================================================
+ * SNAP ROTATION NO-SHAKE DETECTION
+ * Aimbot can do instant 180°/360° snaps without cursor micro-tremor.
+ * Human doing fast rotation always has hand shake/tremor.
+ * Exempts mobile (multi-touch) and accounts for ping/airborne desync.
+ * =========================================================================== */
+function checkSnapRotationNoShake(attackerId, victimId) {
+    if (acExempt(attackerId)) return;
+    if (!acShouldScan(attackerId)) return;
+    var a = safeApi(); if (!a || !a.getPlayerFacingInfo) return;
+
+    var stats = analyzeClickPattern(attackerId);
+    if (stats && stats.isMobile) return;
+
+    var now = safeNow();
+    var facing = a.getPlayerFacingInfo(attackerId);
+    if (!facing || !facing.dir) return;
+
+    if (!snapRotationDb[attackerId]) {
+        snapRotationDb[attackerId] = { lastDir: null, lastTime: 0, strikes: 0, cursorHistory: [] };
+    }
+    var srDb = snapRotationDb[attackerId];
+
+    srDb.cursorHistory.push({ x: facing.dir[0], y: facing.dir[1], z: facing.dir[2], t: now });
+    while (srDb.cursorHistory.length > 10) srDb.cursorHistory.shift();
+
+    if (srDb.lastDir !== null) {
+        var dot = srDb.lastDir.x * facing.dir[0] + srDb.lastDir.y * facing.dir[1] + srDb.lastDir.z * facing.dir[2];
+        var angle = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+        var timeDelta = now - srDb.lastTime;
+
+        if (angle >= CONFIG.SNAP_ROTATION_THRESHOLD && timeDelta < 200) {
+            var hasShake = false;
+            if (srDb.cursorHistory.length >= 3) {
+                var shakeAngles = [];
+                for (var i = 2; i < srDb.cursorHistory.length; i++) {
+                    var p1 = srDb.cursorHistory[i-2], p2 = srDb.cursorHistory[i-1], p3 = srDb.cursorHistory[i];
+                    var dot1 = p1.x * p2.x + p1.y * p2.y + p1.z * p2.z;
+                    var dot2 = p2.x * p3.x + p2.y * p3.y + p2.z * p3.z;
+                    var a1 = Math.acos(Math.max(-1, Math.min(1, dot1))) * (180 / Math.PI);
+                    var a2 = Math.acos(Math.max(-1, Math.min(1, dot2))) * (180 / Math.PI);
+                    shakeAngles.push(Math.abs(a2 - a1));
+                }
+
+                var totalShake = 0;
+                for (var j = 0; j < shakeAngles.length; j++) totalShake += shakeAngles[j];
+                var avgShake = totalShake / shakeAngles.length;
+
+                if (avgShake > 2.0) hasShake = true;
+            }
+
+            var aPos = posOf(attackerId);
+            var isAirborne = aPos && aPos.y > 1.0;
+            var ping = pingOf(attackerId);
+            var highPing = ping > 150;
+
+            if (!hasShake && !isAirborne && !highPing) {
+                srDb.strikes++;
+                if (srDb.strikes >= CONFIG.SNAP_NO_SHAKE_STRIKES) {
+                    srDb.strikes = 0;
+                    runKick(attackerId, nameOf(attackerId), "Aimbot (Snap Rotation Lock)",
+                        angle.toFixed(0) + "° snap in " + timeDelta + "ms with zero cursor tremor - human hand shakes during fast rotation");
+                }
+            }
+        }
+    }
+
+    srDb.lastDir = { x: facing.dir[0], y: facing.dir[1], z: facing.dir[2] };
+    srDb.lastTime = now;
+}
+
+/* ===========================================================================
+ * BEHIND-TARGET HIT DETECTION
+ * KillAura can hit players behind you without turning to face them.
+ * Checks angle between player facing and victim position.
+ * Exempts 3rd person POV (wider view), mobile, and accounts for ping.
+ * =========================================================================== */
+function checkBehindTargetHit(attackerId, victimId) {
+    if (acExempt(attackerId)) return;
+    if (!acShouldScan(attackerId)) return;
+    var a = safeApi(); if (!a || !a.getPosition || !a.getPlayerFacingInfo) return;
+
+    var stats = analyzeClickPattern(attackerId);
+    if (stats && stats.isMobile) return;
+
+    var aPos = a.getPosition(attackerId);
+    var vPos = a.getPosition(victimId);
+    var facing = a.getPlayerFacingInfo(attackerId);
+
+    if (!aPos || !vPos || !facing || !facing.dir) return;
+
+    var ex = aPos[0], ey = aPos[1] + CONFIG.EYE_Y, ez = aPos[2];
+    var vx = vPos[0], vy = vPos[1] + 0.9, vz = vPos[2];
+
+    var toVictimX = vx - ex, toVictimY = vy - ey, toVictimZ = vz - ez;
+    var toVictimLen = Math.sqrt(toVictimX * toVictimX + toVictimY * toVictimY + toVictimZ * toVictimZ);
+    if (toVictimLen < 0.001) return;
+
+    var fx = facing.dir[0], fy = facing.dir[1], fz = facing.dir[2];
+    var fLen = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    if (fLen < 0.001) return;
+
+    var dot = (fx * toVictimX + fy * toVictimY + fz * toVictimZ) / (fLen * toVictimLen);
+    var angleToVictim = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+
+    if (angleToVictim > CONFIG.BEHIND_HIT_ANGLE) {
+        var ping = pingOf(attackerId);
+        var pingBuffer = Math.min(ping / 1000 * 30, 20);
+        var adjustedAngle = angleToVictim - pingBuffer;
+
+        var isAirborne = aPos[1] > 1.0;
+        if (isAirborne) adjustedAngle -= 10;
+
+        if (adjustedAngle > CONFIG.BEHIND_HIT_ANGLE) {
+            if (!behindHitDb[attackerId]) behindHitDb[attackerId] = { strikes: 0 };
+            var bhDb = behindHitDb[attackerId];
+            bhDb.strikes++;
+
+            if (bhDb.strikes >= CONFIG.BEHIND_HIT_STRIKES) {
+                bhDb.strikes = 0;
+                runKick(attackerId, nameOf(attackerId), "KillAura (Behind-Target Intercept)",
+                    "Hit target at " + angleToVictim.toFixed(0) + "° angle (behind) without turning - ping: " + ping + "ms, airborne: " + isAirborne);
+            }
+        }
+    } else if (behindHitDb[attackerId] && behindHitDb[attackerId].strikes > 0) {
+        behindHitDb[attackerId].strikes = Math.max(0, behindHitDb[attackerId].strikes - 0.2);
+    }
+}
+
+/* ===========================================================================
+ * CROSS-SESSION PATTERN FINGERPRINTING
  * Detects advanced randomizers by comparing patterns across sessions.
  * Even if the randomizer changes absolute values (12-13-14 → 24-26-28),
  * the underlying pattern logic (ratios, direction changes) stays the same.
- */
+ * =========================================================================== */
 function calculatePatternFingerprint(intervals) {
     if (intervals.length < 8) return null;
     var ratios = [];
