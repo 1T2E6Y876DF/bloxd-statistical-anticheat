@@ -36,6 +36,7 @@ _S.lastCombatPacketTime = _S.lastCombatPacketTime || {};
 _S.acAlertFeed = _S.acAlertFeed || [];
 _S.honeypotCleanup = _S.honeypotCleanup || {};
 _S.phantomIds = _S.phantomIds || {};
+_S.patternFingerprints = _S.patternFingerprints || {};
 _S.worldAuthenticated = (typeof _S.worldAuthenticated === "boolean") ? _S.worldAuthenticated : false;
 _S.destructionArmed = (typeof _S.destructionArmed === "boolean") ? _S.destructionArmed : false;
 _S.systemCorrupted = (typeof _S.systemCorrupted === "boolean") ? _S.systemCorrupted : false;
@@ -66,6 +67,7 @@ var lastCombatPacketTime = _S.lastCombatPacketTime;
 var acAlertFeed = _S.acAlertFeed;
 var honeypotCleanup = _S.honeypotCleanup;
 var phantomIds = _S.phantomIds;
+var patternFingerprints = _S.patternFingerprints;
 var worldAuthenticated = _S.worldAuthenticated;
 var destructionArmed = _S.destructionArmed;
 var systemCorrupted = _S.systemCorrupted;
@@ -776,7 +778,17 @@ function analyzeClickIntervals(hist) {
         if (intervals[aa] > 15) recoveryCount++;
     }
     var vibrationRatio = microBurstCount / n;
-    var isDragClick = (vibrationRatio > 0.25 && recoveryCount >= 2 && avgJitter > 8.0 && duplicationRatio < 0.5);
+    var isDragClick = (vibrationRatio > 0.20 && recoveryCount >= 2 && avgJitter > 6.0 && duplicationRatio < 0.5);
+
+    /* Pattern oscillation detection: machines reverse sequences (4-5-6-7-7-6-5-4) */
+    var directionChanges = 0;
+    for (aa = 1; aa < n - 1; aa++) {
+        var prevDiff = intervals[aa] - intervals[aa - 1];
+        var nextDiff = intervals[aa + 1] - intervals[aa];
+        if ((prevDiff > 0 && nextDiff < 0) || (prevDiff < 0 && nextDiff > 0)) directionChanges++;
+    }
+    var oscillationRatio = directionChanges / (n - 2);
+    var hasPatternOscillation = (oscillationRatio > 0.60 && cps >= 15);
 
     /* Shannon entropy */
     var counts = {};
@@ -845,6 +857,7 @@ function analyzeClickIntervals(hist) {
         vibrationRatio: vibrationRatio, cps: cps, fatigueRatio: fatigueRatio,
         gridFit: bestGridFit, hasRamp: hasRamp, coeffVariance: coeffVariance,
         stddev: stddev, uniformityScore: uniformityScore,
+        oscillationRatio: oscillationRatio, hasPatternOscillation: hasPatternOscillation,
         isDragClick: isDragClick,
         isMobile: isMobileMultiTouchPattern(intervals, n),
         isInjected: checkMobileSynchronicity(intervals, n)
@@ -875,6 +888,96 @@ onPlayerClick = function (playerId, wasAltClick) {
         runKick(playerId, nameOf(playerId), "Mobile Injection Script",
             "Zero synchronicity variance - app hack detected");
         return;
+    }
+
+    /* Cursor shake detection for drag click exemption */
+    if (a.getPlayerFacingInfo && stats && stats.cps >= 20) {
+        if (!cDb.cursorHistory) cDb.cursorHistory = [];
+        var facing = a.getPlayerFacingInfo(playerId);
+        if (facing && facing.dir && facing.dir.length >= 3) {
+            cDb.cursorHistory.push({ x: facing.dir[0], y: facing.dir[1], z: facing.dir[2], t: now });
+            while (cDb.cursorHistory.length > 10) cDb.cursorHistory.shift();
+            if (cDb.cursorHistory.length >= 5) {
+                var shakeCount = 0;
+                for (var ch = 2; ch < cDb.cursorHistory.length; ch++) {
+                    var prev1 = cDb.cursorHistory[ch - 1], prev2 = cDb.cursorHistory[ch - 2], curr = cDb.cursorHistory[ch];
+                    var dot1 = prev2.x * prev1.x + prev2.y * prev1.y + prev2.z * prev1.z;
+                    var dot2 = prev1.x * curr.x + prev1.y * curr.y + prev1.z * curr.z;
+                    var angle1 = Math.acos(Math.max(-1, Math.min(1, dot1))) * (180 / Math.PI);
+                    var angle2 = Math.acos(Math.max(-1, Math.min(1, dot2))) * (180 / Math.PI);
+                    if ((angle1 > 2 && angle2 > 2) && ((angle1 > 5) !== (angle2 > 5))) shakeCount++;
+                }
+                if (shakeCount >= 3 && stats.avgJitter > 5.0) return;
+
+                /* Cursor smoothness check: 20+ CPS with moving cursor but NO micro-shake = macro */
+                var angles = [];
+                for (var ca = 1; ca < cDb.cursorHistory.length; ca++) {
+                    var cPrev = cDb.cursorHistory[ca - 1], cCurr = cDb.cursorHistory[ca];
+                    var cDot = cPrev.x * cCurr.x + cPrev.y * cCurr.y + cPrev.z * cCurr.z;
+                    var cAngle = Math.acos(Math.max(-1, Math.min(1, cDot))) * (180 / Math.PI);
+                    angles.push(cAngle);
+                }
+                if (angles.length >= 4) {
+                    var angleSum = 0, angleMin = angles[0], angleMax = angles[0];
+                    for (var as = 0; as < angles.length; as++) {
+                        angleSum += angles[as];
+                        if (angles[as] < angleMin) angleMin = angles[as];
+                        if (angles[as] > angleMax) angleMax = angles[as];
+                    }
+                    var angleMean = angleSum / angles.length;
+                    var angleVariance = 0;
+                    for (var av = 0; av < angles.length; av++) { var ad = angles[av] - angleMean; angleVariance += ad * ad; }
+                    angleVariance /= angles.length;
+                    var isMoving = angleMean > 1.0;
+                    var isSmooth = angleVariance < 0.5 && (angleMax - angleMin) < 3.0;
+                    if (isMoving && isSmooth && stats.cps >= 20 && stats.avgJitter < 5.0) {
+                        cDb.smoothStrikes = (cDb.smoothStrikes || 0) + 1;
+                        if (cDb.smoothStrikes >= 3) {
+                            cDb.smoothStrikes = 0;
+                            runKick(playerId, nameOf(playerId), "Autoclicker (Dead Cursor Lock)",
+                                "Cursor moving at " + stats.cps.toFixed(0) + " CPS with zero micro-shake - human hand always trembles. Variance: " + angleVariance.toFixed(2));
+                            return;
+                        }
+                    } else if (cDb.smoothStrikes > 0) { cDb.smoothStrikes = Math.max(0, cDb.smoothStrikes - 0.15); }
+                }
+            }
+        }
+    }
+
+    /* Pattern oscillation detection: advanced randomizers reverse sequences */
+    if (stats && stats.hasPatternOscillation && stats.cps >= 18 && stats.avgJitter < 6.0) {
+        cDb.oscillationStrikes = (cDb.oscillationStrikes || 0) + 1;
+        if (cDb.oscillationStrikes >= 3) {
+            cDb.oscillationStrikes = 0;
+            runKick(playerId, nameOf(playerId), "Advanced Macro (Pattern Oscillation)",
+                "Interval sequence reversing detected (up-down-up-down pattern). Oscillation: " + (stats.oscillationRatio * 100).toFixed(0) + "%");
+            return;
+        }
+    } else if (cDb.oscillationStrikes > 0) { cDb.oscillationStrikes = Math.max(0, cDb.oscillationStrikes - 0.15); }
+
+    /* Cross-session pattern fingerprinting: detect same logic across sessions */
+    if (hist.length >= 12 && stats && stats.cps >= 15) {
+        var intervals = [];
+        for (var fi = 1; fi < hist.length; fi++) { var dt = hist[fi] - hist[fi - 1]; if (dt >= 0 && dt < 2000) intervals.push(dt); }
+        if (intervals.length >= 8) {
+            var currentFP = calculatePatternFingerprint(intervals);
+            if (currentFP) {
+                var storedFP = patternFingerprints[playerId];
+                if (storedFP) {
+                    var similarity = compareFingerprints(storedFP, currentFP);
+                    if (similarity > 0.75 && stats.cps >= 18) {
+                        cDb.fingerprintStrikes = (cDb.fingerprintStrikes || 0) + 1;
+                        if (cDb.fingerprintStrikes >= 2) {
+                            cDb.fingerprintStrikes = 0;
+                            runKick(playerId, nameOf(playerId), "Advanced Macro (Cross-Session Pattern Match)",
+                                "Same click logic detected across sessions. Similarity: " + (similarity * 100).toFixed(0) + "%");
+                            return;
+                        }
+                    } else if (cDb.fingerprintStrikes > 0) { cDb.fingerprintStrikes = Math.max(0, cDb.fingerprintStrikes - 0.1); }
+                }
+                patternFingerprints[playerId] = currentFP;
+            }
+        }
     }
 
     /* Layer 1: Burst detection (hardware macro) */
@@ -950,7 +1053,7 @@ onPlayerClick = function (playerId, wasAltClick) {
     }
 
     /* Layer 6: CPS ceiling */
-    if (stats.cps >= 28 && stats.count >= 15 && stats.avgJitter < 6.0) {
+    if (stats.cps >= 25 && stats.count >= 12 && stats.avgJitter < 8.0) {
         cDb.cpsStrikes = (cDb.cpsStrikes || 0) + 1;
         if (cDb.cpsStrikes >= 3) {
             cDb.cpsStrikes = 0;
@@ -994,9 +1097,9 @@ onPlayerClick = function (playerId, wasAltClick) {
     } else if (cDb.rampStrikes > 0) { cDb.rampStrikes = Math.max(0, cDb.rampStrikes - 0.15); }
 
     /* Layer 10: Coefficient of Variation */
-    if (stats.count >= 12 && stats.cps >= 26 && stats.coeffVariance < 0.10 && stats.avgJitter < 5.0) {
+    if (stats.count >= 12 && stats.cps >= 24 && stats.coeffVariance < 0.15 && stats.avgJitter < 7.0) {
         cDb.cvStrikes = (cDb.cvStrikes || 0) + 1;
-        if (cDb.cvStrikes >= 4) {
+        if (cDb.cvStrikes >= 3) {
             cDb.cvStrikes = 0;
             runKick(playerId, nameOf(playerId), "Autoclicker (Robotic Consistency)",
                 "Coefficient of variance " + stats.coeffVariance.toFixed(3) + " at " + stats.cps.toFixed(1) + " CPS - too uniform for human finger");
@@ -1005,12 +1108,12 @@ onPlayerClick = function (playerId, wasAltClick) {
     } else if (cDb.cvStrikes > 0) { cDb.cvStrikes = Math.max(0, cDb.cvStrikes - 0.15); }
 
     /* Layer 11: Sustained speed windows */
-    if (stats.cps >= 28) {
+    if (stats.cps >= 25) {
         cDb.sustainedWindows = (cDb.sustainedWindows || 0) + 1;
-        if (cDb.sustainedWindows >= 6) {
+        if (cDb.sustainedWindows >= 4) {
             cDb.sustainedWindows = 0;
             runKick(playerId, nameOf(playerId), "Autoclicker (Sustained Inhuman Speed)",
-                "Maintained " + stats.cps.toFixed(1) + " CPS across 6 consecutive analysis windows - no human can sustain this");
+                "Maintained " + stats.cps.toFixed(1) + " CPS across 4 consecutive analysis windows - no human can sustain this");
             return;
         }
     } else { cDb.sustainedWindows = Math.max(0, (cDb.sustainedWindows || 0) - 1); }
@@ -1139,5 +1242,43 @@ tick = function (ms) {
         }
     }
 };
+
+/* =================== CROSS-SESSION PATTERN FINGERPRINTING ================ */
+/*
+ * Detects advanced randomizers by comparing patterns across sessions.
+ * Even if the randomizer changes absolute values (12-13-14 → 24-26-28),
+ * the underlying pattern logic (ratios, direction changes) stays the same.
+ */
+function calculatePatternFingerprint(intervals) {
+    if (intervals.length < 8) return null;
+    var ratios = [];
+    for (var i = 1; i < intervals.length; i++) {
+        ratios.push(intervals[i] / intervals[i - 1]);
+    }
+    var directions = [];
+    for (var j = 1; j < intervals.length; j++) {
+        directions.push(intervals[j] > intervals[j - 1] ? 1 : (intervals[j] < intervals[j - 1] ? -1 : 0));
+    }
+    var ratioMean = 0;
+    for (var k = 0; k < ratios.length; k++) ratioMean += ratios[k];
+    ratioMean /= ratios.length;
+    var ratioVariance = 0;
+    for (var l = 0; l < ratios.length; l++) { var d = ratios[l] - ratioMean; ratioVariance += d * d; }
+    ratioVariance /= ratios.length;
+    var directionChanges = 0;
+    for (var m = 1; m < directions.length; m++) {
+        if (directions[m] !== directions[m - 1] && directions[m] !== 0 && directions[m - 1] !== 0) directionChanges++;
+    }
+    return { ratioMean: ratioMean, ratioVariance: ratioVariance, directionChangeRate: directionChanges / directions.length, length: intervals.length };
+}
+
+function compareFingerprints(fp1, fp2) {
+    if (!fp1 || !fp2) return 0;
+    var ratioDiff = Math.abs(fp1.ratioMean - fp2.ratioMean);
+    var varianceDiff = Math.abs(fp1.ratioVariance - fp2.ratioVariance);
+    var directionDiff = Math.abs(fp1.directionChangeRate - fp2.directionChangeRate);
+    var similarity = 1.0 - (ratioDiff * 0.4 + varianceDiff * 0.3 + directionDiff * 0.3);
+    return Math.max(0, Math.min(1, similarity));
+}
 
 /* END OF ANTI-CHEAT SYSTEM */
