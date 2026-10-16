@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/33551573/README.md)
+[README.md](https://github.com/user-attachments/files/33552294/README.md)
 # Bloxd.io Advanced Anti-Cheat System
 
 A comprehensive server-side anti-cheat engine built for [Bloxd.io](https://bloxd.io) F8 worlds. Written in pure JavaScript with zero dependencies — designed to run inside Bloxd.io's world code editor.
@@ -15,9 +15,11 @@ A comprehensive server-side anti-cheat engine built for [Bloxd.io](https://bloxd
 | **Movement** | Reach/hitbox expansion, anti-knockback, desync detection |
 | **Mobile** | Multi-touch pattern exemption, drag click exemption, injection script detection |
 
-## Detection Layers (21 Total)
+## Detection Systems (31 Total)
 
-The click analysis engine uses 21 statistical layers to distinguish humans from machines:
+### Statistical Analysis Layers (21 Layers)
+
+The core detection engine uses 21 statistical layers to distinguish humans from machines:
 
 1. **Burst Detection** — 0-6ms gaps = hardware macro (Firekey etc.)
 2. **Packet Signature Mirror** — Repeating delta patterns across clicks (1.5ms tolerance)
@@ -40,6 +42,21 @@ The click analysis engine uses 21 statistical layers to distinguish humans from 
 19. **Target Switch Snap** — Instant target lock with 15°+ cursor snap when switching targets during multi-target chase; human tracking has smooth transition lag
 20. **Snap Rotation Without Tremor** — 150°+ instant rotation with zero cursor micro-shake = aimbot (human hand always trembles during fast rotation); exempts mobile, accounts for ping/airborne desync
 21. **Behind-Target Hit Intercept** — Hitting target at 90°+ angle (behind player) without turning = killaura; exempts 3rd person POV, mobile, accounts for ping buffer and airborne state
+
+### Combat Validation Systems (10 Additional Detections)
+
+Beyond the statistical layers, the system includes 10 combat validation checks:
+
+22. **Reach Validation** — Distance checking with ping compensation (4.8m base + 0.6m buffer)
+23. **Hitbox Variance Lock** — Unnatural coordinate locking on airborne targets
+24. **Silent Aim Detection** — Packet deviation analysis (look direction vs impact angle)
+25. **Spinbot Detection** — Helicopter rotation lock with sustained spin analysis
+26. **Anti-Knockback (Kinematic)** — Physics-based movement verification
+27. **Desync Detection** — Position/timing mismatch detection
+28. **Honeypot Phantom Entities** — Client-side invisible entities to catch KillAura
+29. **AFK Shield** — Input-time based protection (clicks, chat, mouse look)
+30. **Mobile Multi-Touch Detection** — Identifies mobile input signatures for exemption
+31. **Injection Script Detection** — Zero synchronicity variance = app hack
 
 ## Advanced Randomizer Detection
 
