@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/33540916/README.md)
+[README.md](https://github.com/user-attachments/files/33541875/README.md)
 # Bloxd.io Advanced Anti-Cheat System
 
 A comprehensive server-side anti-cheat engine built for [Bloxd.io](https://bloxd.io) F8 worlds. Written in pure JavaScript with zero dependencies — designed to run inside Bloxd.io's world code editor.
@@ -93,10 +93,14 @@ bloxd_anticheat.js
 └── Main Tick Loop             (periodic scanning + cleanup)
 ```
 
+## Status
+
+**Currently busy with studies.** If you find any bugs, comment on the issues page and I'll look into them when I'm free. Updates and bug fixes will come when I have time.
+
 ## License
 
 MIT — Use it, modify it, share it. Just don't claim you built it from scratch.
 
 ## Credits
 
-Built by **1T2E6Y876DF** (In-game name: **1TZ_RE0**) — first program, learn as you go.
+Built by **1T2E6Y876DF** (GitHub) / **1TZ_RE0** (In-Game) — first program, learn as you go.
