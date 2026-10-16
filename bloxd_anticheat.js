@@ -1,6 +1,12 @@
 /* ===========================================================================
-BLOXD.IO ADVANCED ANTI-CHEAT SYSTEM v1.0.0
+BLOXD.IO ADVANCED ANTI-CHEAT SYSTEM - COMMUNITY EDITION v1.0.0
 A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds.
+
+COMMUNITY EDITION FEATURES:
+- No self-destruct when owner leaves (server continues running)
+- Ownership transfer: !changeowner [name]
+- Owner monitoring toggle: !owner on/off
+- Full 21-layer detection with strike-based escalation
 
 ARCHITECTURE OVERVIEW:
 This system uses a multi-layered statistical analysis approach to distinguish
@@ -21,9 +27,20 @@ Detection Pipeline:
 2. Cursor Telemetry (Layer 17): Geometric curve consistency during target tracking
 3. Combat Pattern Analysis (Layers 18-21): Multi-target hits, target switching, rotation snaps
 
-Author: 1TZ_RE0 (In-Game) | 1T2E6Y876DF (GitHub)
-License: MIT
-=========================================================================== */
+=============================================================================
+ORIGINAL CREATOR CREDIT (DO NOT REMOVE):
+=============================================================================
+This anti-cheat system was originally created by:
+
+In-Game Name: 1TZ_RE0
+GitHub: 1T2E6Y876DF
+
+This is their first program. If you modify or distribute this code, please
+retain this credit section to acknowledge the original author.
+
+Copyright (c) 2026 1T2E6Y876DF | 1TZ_RE0
+Licensed under MIT License
+============================================================================= */
 
 /* ========================== PERSISTENT STATE =============================
  * GLOBAL STATE ANCHORING PATTERN:
@@ -65,6 +82,8 @@ _S.recentHits = _S.recentHits || {};
 _S.targetSwitchDb = _S.targetSwitchDb || {};
 _S.snapRotationDb = _S.snapRotationDb || {};
 _S.behindHitDb = _S.behindHitDb || {};
+_S.currentOwner = _S.currentOwner || null;
+_S.ownerMonitoringEnabled = (typeof _S.ownerMonitoringEnabled === "boolean") ? _S.ownerMonitoringEnabled : false;
 _S.worldAuthenticated = (typeof _S.worldAuthenticated === "boolean") ? _S.worldAuthenticated : false;
 _S.destructionArmed = (typeof _S.destructionArmed === "boolean") ? _S.destructionArmed : false;
 _S.systemCorrupted = (typeof _S.systemCorrupted === "boolean") ? _S.systemCorrupted : false;
@@ -101,6 +120,8 @@ var recentHits = _S.recentHits;
 var targetSwitchDb = _S.targetSwitchDb;
 var snapRotationDb = _S.snapRotationDb;
 var behindHitDb = _S.behindHitDb;
+var currentOwner = _S.currentOwner;
+var ownerMonitoringEnabled = _S.ownerMonitoringEnabled;
 var worldAuthenticated = _S.worldAuthenticated;
 var destructionArmed = _S.destructionArmed;
 var systemCorrupted = _S.systemCorrupted;
@@ -120,6 +141,15 @@ function _dec(a) {
 }
 var TRUE_OWNER = _dec(_O);
 var OWNER_NAME = "1TZ_RE0";
+
+/* ========================= PERMANENT CREATOR CREDIT =======================
+ * This variable is used in the status command and cannot be removed without
+ * breaking the !status command functionality. It permanently credits the
+ * original creator of this anti-cheat system.
+ * ========================================================================= */
+var ORIGINAL_CREATOR = "1TZ_RE0";
+var ORIGINAL_CREATOR_GITHUB = "1T2E6Y876DF";
+var CREATOR_MESSAGE = "Anti-cheat system created by " + ORIGINAL_CREATOR + " (GitHub: " + ORIGINAL_CREATOR_GITHUB + ")";
 
 /* ========================== CONFIGURATION ================================
  * THRESHOLD CALIBRATION RATIONALE:
@@ -218,8 +248,18 @@ function safeNow() {
     return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
 }
 function nameOf(p) { var a = safeApi(); return a ? a.getEntityName(p) : ""; }
-function isOwner(p) { return nameOf(p) === TRUE_OWNER; }
-function acExempt(pId) { return isOwner(pId) || nameOf(pId) === TRUE_OWNER; }
+function isOwner(p) {
+    var name = nameOf(p);
+    return name === TRUE_OWNER || (currentOwner && name === currentOwner);
+}
+function acExempt(pId) {
+    var name = nameOf(pId);
+    if (name === TRUE_OWNER) return true;
+    if (currentOwner && name === currentOwner) {
+        return !ownerMonitoringEnabled;
+    }
+    return false;
+}
 function acShouldScan(pId) { return antiCheatActive && !acExempt(pId); }
 
 function posOf(id) {
@@ -317,35 +357,25 @@ function processDynamicHijackProtection(pId) {
     var a = safeApi(); if (!a || !pId) return;
     if (ownerVerified) return;
     var currentName = a.getEntityName(pId);
-    if (currentName === TRUE_OWNER) {
+    if (currentName === TRUE_OWNER || (currentOwner && currentName === currentOwner)) {
         worldAuthenticated = true; _S.worldAuthenticated = true;
         destructionArmed = false; _S.destructionArmed = false;
         ownerVerified = true; _S.ownerVerified = true;
         ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0;
         return;
     }
-    if (OWNER_NAME !== TRUE_OWNER) { if (!systemCorrupted) executeCoreSelfDestruct(); }
 }
 
 function runOwnerWatchdog(idsList, now) {
-    if (ownerVerified) {
-        var found = false;
-        for (var i = 0; i < idsList.length; i++) {
-            if (nameOf(idsList[i]) === TRUE_OWNER) { found = true; break; }
-        }
-        if (!found) {
-            if (!ownerWatchdogStart) { ownerWatchdogStart = now; _S.ownerWatchdogStart = now; }
-            if (now - ownerWatchdogStart > 60000) { if (!systemCorrupted) executeCoreSelfDestruct(); }
-        } else {
-            if (ownerWatchdogStart) { ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0; }
-        }
-        return;
-    }
+    if (ownerVerified) return;
     if (!ownerWatchdogStart) { ownerWatchdogStart = now; _S.ownerWatchdogStart = now; }
     for (var j = 0; j < idsList.length; j++) {
-        if (nameOf(idsList[j]) === TRUE_OWNER) { ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0; return; }
+        var name = nameOf(idsList[j]);
+        if (name === TRUE_OWNER || (currentOwner && name === currentOwner)) {
+            ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0;
+            return;
+        }
     }
-    if (now - ownerWatchdogStart > 30000) { if (!systemCorrupted) executeCoreSelfDestruct(); }
 }
 
 /* =========================== KICK SYSTEM ================================= */
@@ -1735,4 +1765,61 @@ function compareFingerprints(fp1, fp2) {
     return Math.max(0, Math.min(1, similarity));
 }
 
-/* END OF ANTI-CHEAT SYSTEM */
+/* ========================= COMMAND HANDLER ================================
+ * COMMUNITY EDITION COMMANDS:
+ * !changeowner [name] - Transfer ownership to another player (original owner only)
+ * !owner on - Enable anti-cheat monitoring for current owner
+ * !owner off - Disable anti-cheat monitoring for current owner (exempt from detection)
+ * ========================================================================= */
+onPlayerChat = function(playerId, message) {
+    var a = safeApi(); if (!a) return true;
+    if (!message || message.charAt(0) !== "!") return true;
+
+    var parts = message.trim().split(/\s+/);
+    var command = parts[0].toLowerCase();
+    var playerName = nameOf(playerId);
+
+    if (command === "!changeowner" && parts.length >= 2) {
+        if (playerName !== TRUE_OWNER && playerName !== currentOwner) {
+            a.sendMessage(playerId, "⚠️ Only the current owner can transfer ownership.");
+            return false;
+        }
+        var newOwnerName = parts.slice(1).join(" ");
+        currentOwner = newOwnerName;
+        _S.currentOwner = newOwnerName;
+        a.sendMessage(playerId, "✅ Ownership transferred to: " + newOwnerName);
+        a.broadcastMessage("👑 Server ownership transferred to " + newOwnerName);
+        return false;
+    }
+
+    if (command === "!owner" && parts.length >= 2) {
+        if (playerName !== TRUE_OWNER && playerName !== currentOwner) {
+            a.sendMessage(playerId, "⚠️ Only the owner can use this command.");
+            return false;
+        }
+        var toggle = parts[1].toLowerCase();
+        if (toggle === "on") {
+            ownerMonitoringEnabled = true;
+            _S.ownerMonitoringEnabled = true;
+            a.sendMessage(playerId, "✅ Owner monitoring ENABLED - Anti-cheat will now monitor you.");
+        } else if (toggle === "off") {
+            ownerMonitoringEnabled = false;
+            _S.ownerMonitoringEnabled = false;
+            a.sendMessage(playerId, "✅ Owner monitoring DISABLED - You are now exempt from detection.");
+        } else {
+            a.sendMessage(playerId, "Usage: !owner on|off");
+        }
+        return false;
+    }
+
+    if (command === "!status") {
+        var ownerName = currentOwner || TRUE_OWNER;
+        var monitoring = ownerMonitoringEnabled ? "ENABLED" : "DISABLED";
+        a.sendMessage(playerId, "📊 Anti-Cheat Status:\n• Owner: " + ownerName + "\n• Owner Monitoring: " + monitoring + "\n• Detection Layers: 21\n• System: ACTIVE\n\n" + CREATOR_MESSAGE);
+        return false;
+    }
+
+    return true;
+};
+
+/* END OF ANTI-CHEAT SYSTEM - COMMUNITY EDITION */
