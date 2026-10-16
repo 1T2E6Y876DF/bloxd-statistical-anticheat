@@ -1,4 +1,4 @@
-[README_COMMUNITY.md](https://github.com/user-attachments/files/33552599/README_COMMUNITY.md)
+[README_COMMUNITY.md](https://github.com/user-attachments/files/33555607/README_COMMUNITY.md)
 # Bloxd.io Anti-Cheat System - Community Edition
 
 A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds with **ownership transfer** and **owner monitoring toggle** features.
@@ -113,6 +113,20 @@ All thresholds are in the `CONFIG` object at the top of the file. See code comme
 - Bloxd.io F8 world with code editor access
 - No external dependencies — pure JavaScript
 - Uses Bloxd.io API: `api.getEntityName()`, `api.getPosition()`, `api.kickPlayer()`, etc.
+
+## Development & Contributions
+
+**This is my first ever software development project.** I had no prior programming experience before starting this anti-cheat system.
+
+I used AI-assisted development as a learning tool:
+- **AI Agent Collaboration**: Worked with AI to implement initial logic and syntax
+- **Active Testing**: Personally tested every detection layer with real players using various input devices
+- **Bug Discovery & Debugging**: Found edge cases and false positives through systematic testing, then debugged and fixed them
+- **Logic Development**: When existing detection logic failed, I analyzed the root cause and developed new detection algorithms
+
+This project demonstrates my ability to learn rapidly, work with modern tools, think systematically, debug effectively, and iterate based on real-world feedback.
+
+See the [main anti-cheat repository](https://github.com/1T2E6Y876DF/bloxd-statistical-anticheat) for detailed problem-solving examples and lessons learned.
 
 ## Status
 
