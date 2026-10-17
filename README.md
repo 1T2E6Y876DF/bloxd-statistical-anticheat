@@ -1,17 +1,26 @@
-[README_COMMUNITY.md](https://github.com/user-attachments/files/33555607/README_COMMUNITY.md)
+[README_COMMUNITY.md](https://github.com/user-attachments/files/33591064/README_COMMUNITY.md)
 # Bloxd.io Anti-Cheat System - Community Edition
 
-A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds with **ownership transfer** and **owner monitoring toggle** features.
+A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds with **automatic ownership** and **no self-destruct** features.
 
 ## Community Edition Features
 
 Unlike the standard version, the Community Edition:
-- **No self-destruct** when owner leaves server (server continues running)
+- **No self-destruct**: Server continues running regardless of who joins or leaves
+- **Auto-ownership**: First player to join the world automatically becomes the owner
 - **Ownership transfer**: `!changeowner [name]` - Transfer ownership to another player
 - **Owner monitoring toggle**: 
   - `!owner on` - Enable anti-cheat monitoring for owner (flags them if they cheat)
   - `!owner off` - Disable monitoring (owner exempt from detection)
 - **Status check**: `!status` - View current owner and monitoring status
+
+## Quick Start
+
+1. Open your Bloxd.io F8 world
+2. Open the code editor (F8)
+3. Paste the contents of `bloxd_anticheat_community.js`
+4. Save and test
+5. **First player to join becomes the owner automatically**
 
 ## Commands
 
@@ -38,9 +47,9 @@ Unlike the standard version, the Community Edition:
 
 ### Statistical Analysis Layers (21 Layers)
 
-1. **Burst Detection** — 0-6ms gaps = hardware macro
-2. **Packet Signature Mirror** — Repeating delta patterns (1.5ms tolerance)
-3. **Jitter Analysis** — Missing micro-variations
+1. **Burst Detection** — Perfectly identical intervals (hardware macro signature at 50ms resolution)
+2. **Packet Signature Mirror** — Repeating delta patterns (50ms tolerance for quantized data)
+3. **Jitter Analysis** — Missing micro-variations in 50ms steps
 4. **Duplication Ratio** — Recycled interval values (>60% = macro)
 5. **Shannon Entropy** — Too predictable (<0.25 = static loop)
 6. **CPS Ceiling** — 25+ CPS with <8.0ms jitter = inhuman (3 strikes)
@@ -73,25 +82,30 @@ Unlike the standard version, the Community Edition:
 30. **Mobile Multi-Touch Detection** — Mobile input signature identification
 31. **Injection Script Detection** — Zero synchronicity variance = app hack
 
-## How to Use
+## 50ms Resolution Adjustments
 
-1. Open your Bloxd.io F8 world
-2. Open the code editor (F8)
-3. Paste the contents of `bloxd_anticheat_community.js`
-4. Change `TRUE_OWNER` to your username (or keep the obfuscated char codes)
-5. Save and test
+All detection algorithms have been adjusted for Bloxd.io's 50ms tick rate:
 
-### Ownership Transfer Example
+- **Burst Detection**: Now detects perfectly identical intervals (gap1 === gap2) instead of 0-6ms gaps
+- **Packet Signature Mirror**: Tolerance increased from 1.5ms to 50ms
+- **Drag Click Detection**: Looks for 50ms intervals (micro-bursts) and 100ms+ intervals (recovery)
+- **Mobile Detection**: MOBILE_MULTI_TOUCH_MS = 50ms, MOBILE_RECOVERY_MS = 100ms
+
+## Ownership Transfer Example
 
 ```
-You: !changeowner Player123
-System: ✅ Ownership transferred to: Player123
-System: 👑 Server ownership transferred to Player123
+Player1 joins first
+System: 👑 Welcome! You are now the owner of this anti-cheat system.
+System: 📝 Use !status to view commands. Use !changeowner [name] to transfer ownership.
 
-Player123: !owner off
+Player1: !changeowner Player2
+System: ✅ Ownership transferred to: Player2
+System: 👑 Server ownership transferred to Player2
+
+Player2: !owner off
 System: ✅ Owner monitoring DISABLED - You are now exempt from detection.
 
-Player123: !owner on
+Player2: !owner on
 System: ✅ Owner monitoring ENABLED - Anti-cheat will now monitor you.
 ```
 
