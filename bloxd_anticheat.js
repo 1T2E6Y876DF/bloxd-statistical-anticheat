@@ -1,12 +1,14 @@
 /* ===========================================================================
-BLOXD.IO ADVANCED ANTI-CHEAT SYSTEM - COMMUNITY EDITION v1.0.0
+BLOXD.IO ADVANCED ANTI-CHEAT SYSTEM - COMMUNITY EDITION v1.1.0
 A comprehensive server-side anti-cheat engine for Bloxd.io F8 worlds.
 
 COMMUNITY EDITION FEATURES:
-- No self-destruct when owner leaves (server continues running)
+- No self-destruct: Server continues running regardless of who joins/leaves
+- Auto-ownership: First player to join becomes the owner automatically
 - Ownership transfer: !changeowner [name]
 - Owner monitoring toggle: !owner on/off
 - Full 21-layer detection with strike-based escalation
+- Adjustable for 50ms Bloxd.io tick rate
 
 ARCHITECTURE OVERVIEW:
 This system uses a multi-layered statistical analysis approach to distinguish
@@ -84,12 +86,7 @@ _S.snapRotationDb = _S.snapRotationDb || {};
 _S.behindHitDb = _S.behindHitDb || {};
 _S.currentOwner = _S.currentOwner || null;
 _S.ownerMonitoringEnabled = (typeof _S.ownerMonitoringEnabled === "boolean") ? _S.ownerMonitoringEnabled : false;
-_S.worldAuthenticated = (typeof _S.worldAuthenticated === "boolean") ? _S.worldAuthenticated : false;
-_S.destructionArmed = (typeof _S.destructionArmed === "boolean") ? _S.destructionArmed : false;
-_S.systemCorrupted = (typeof _S.systemCorrupted === "boolean") ? _S.systemCorrupted : false;
 _S.antiCheatActive = (typeof _S.antiCheatActive === "boolean") ? _S.antiCheatActive : true;
-_S.ownerWatchdogStart = (typeof _S.ownerWatchdogStart === "number") ? _S.ownerWatchdogStart : 0;
-_S.ownerVerified = (typeof _S.ownerVerified === "boolean") ? _S.ownerVerified : false;
 _S.spawnProtection = (typeof _S.spawnProtection === "boolean") ? _S.spawnProtection : true;
 
 var reachViolations = _S.reachViolations;
@@ -122,34 +119,12 @@ var snapRotationDb = _S.snapRotationDb;
 var behindHitDb = _S.behindHitDb;
 var currentOwner = _S.currentOwner;
 var ownerMonitoringEnabled = _S.ownerMonitoringEnabled;
-var worldAuthenticated = _S.worldAuthenticated;
-var destructionArmed = _S.destructionArmed;
-var systemCorrupted = _S.systemCorrupted;
 var antiCheatActive = _S.antiCheatActive;
-var ownerWatchdogStart = _S.ownerWatchdogStart;
-var ownerVerified = _S.ownerVerified;
 var spawnProtection = _S.spawnProtection;
 
-/* ========================= OWNER VERIFICATION ============================ */
-/* Obfuscated owner name to prevent code-copy hijacking */
-var _O = [49, 84, 90, 95, 82, 69, 48];
-function _dec(a) {
-    var s = "";
-    for (var i = 0; i < a.length; i++)
-        s += String.fromCharCode(a[i]);
-    return s;
-}
-var TRUE_OWNER = _dec(_O);
-var OWNER_NAME = "1TZ_RE0";
-
-/* ========================= PERMANENT CREATOR CREDIT =======================
- * This variable is used in the status command and cannot be removed without
- * breaking the !status command functionality. It permanently credits the
- * original creator of this anti-cheat system.
- * ========================================================================= */
-var ORIGINAL_CREATOR = "1TZ_RE0";
-var ORIGINAL_CREATOR_GITHUB = "1T2E6Y876DF";
-var CREATOR_MESSAGE = "Anti-cheat system created by " + ORIGINAL_CREATOR + " (GitHub: " + ORIGINAL_CREATOR_GITHUB + ")";
+/* ========================= OWNER SYSTEM ================================== */
+/* First player to join becomes the owner automatically */
+var ownerInitialized = false;
 
 /* ========================== CONFIGURATION ================================
  * THRESHOLD CALIBRATION RATIONALE:
@@ -182,9 +157,9 @@ var CONFIG = {
     REQUIRED_CLICKS: 8,
     MAX_INTERVAL: 2000,
 
-    /* Mobile detection */
-    MOBILE_MULTI_TOUCH_MS: 2,
-    MOBILE_RECOVERY_MS: 50,
+    /* Mobile detection (adjusted for 50ms interval resolution) */
+    MOBILE_MULTI_TOUCH_MS: 50,
+    MOBILE_RECOVERY_MS: 100,
     MOBILE_SYNCHRONICITY_THRESHOLD: 0.001,
 
     /* Aimbot/Spinbot */
@@ -250,11 +225,10 @@ function safeNow() {
 function nameOf(p) { var a = safeApi(); return a ? a.getEntityName(p) : ""; }
 function isOwner(p) {
     var name = nameOf(p);
-    return name === TRUE_OWNER || (currentOwner && name === currentOwner);
+    return currentOwner && name === currentOwner;
 }
 function acExempt(pId) {
     var name = nameOf(pId);
-    if (name === TRUE_OWNER) return true;
     if (currentOwner && name === currentOwner) {
         return !ownerMonitoringEnabled;
     }
@@ -335,45 +309,21 @@ function clearPlayerState(pId) {
 }
 
 /* ======================== ANTI-HIJACK SYSTEM ============================= */
-function executeCoreSelfDestruct() {
-    var a = safeApi();
-    systemCorrupted = true; _S.systemCorrupted = true;
-    antiCheatActive = false; _S.antiCheatActive = false;
-    clickData = {}; acCombatDb = {}; acAimDb = {}; positionHistory = {};
-    _S.clickData = clickData; _S.acCombatDb = acCombatDb;
-    _S.acAimDb = acAimDb; _S.positionHistory = positionHistory;
-    if (!a) return;
-    try {
-        var ids = a.getPlayerIds();
-        for (var i = 0; i < ids.length; i++) {
-            var pId = ids[i];
-            if (a.clearInventory) a.clearInventory(pId);
-            if (a.kickPlayer) a.kickPlayer(pId, "CRITICAL LOCKOUT - Unauthorized code copy detected.");
-        }
-    } catch(e) {}
-}
-
-function processDynamicHijackProtection(pId) {
-    var a = safeApi(); if (!a || !pId) return;
-    if (ownerVerified) return;
-    var currentName = a.getEntityName(pId);
-    if (currentName === TRUE_OWNER || (currentOwner && currentName === currentOwner)) {
-        worldAuthenticated = true; _S.worldAuthenticated = true;
-        destructionArmed = false; _S.destructionArmed = false;
-        ownerVerified = true; _S.ownerVerified = true;
-        ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0;
-        return;
-    }
-}
-
-function runOwnerWatchdog(idsList, now) {
-    if (ownerVerified) return;
-    if (!ownerWatchdogStart) { ownerWatchdogStart = now; _S.ownerWatchdogStart = now; }
-    for (var j = 0; j < idsList.length; j++) {
-        var name = nameOf(idsList[j]);
-        if (name === TRUE_OWNER || (currentOwner && name === currentOwner)) {
-            ownerWatchdogStart = 0; _S.ownerWatchdogStart = 0;
-            return;
+/* ======================== AUTO-OWNER INITIALIZATION ====================== */
+/* First player to join becomes the owner automatically */
+function initializeOwner(idsList) {
+    if (ownerInitialized && currentOwner) return;
+    if (idsList.length === 0) return;
+    var firstPlayerId = idsList[0];
+    var firstName = nameOf(firstPlayerId);
+    if (firstName) {
+        currentOwner = firstName;
+        _S.currentOwner = currentOwner;
+        ownerInitialized = true;
+        var a = safeApi();
+        if (a && a.sendMessage) {
+            a.sendMessage(firstPlayerId, "👑 Welcome! You are now the owner of this anti-cheat system.");
+            a.sendMessage(firstPlayerId, "📝 Use !status to view commands. Use !changeowner [name] to transfer ownership.");
         }
     }
 }
@@ -837,17 +787,21 @@ function checkMobileSynchronicity(intervals, n) {
  * CLICK INTERVAL STATISTICAL ANALYSIS ENGINE
  * Core detection function that computes 16 statistical metrics from click history.
  * 
- * Statistical Approach:
- * - Jitter analysis: Human hands produce micro-variations (2-15ms) between clicks
- *   due to muscle tremor and neural signal noise. Macros produce 0-2ms jitter.
- * - Coefficient of Variation (CV): stddev/mean ratio. Humans >0.15 at speed,
- *   macros 0.01-0.15. This normalizes variance across different CPS ranges.
+ * IMPORTANT: Bloxd.io provides click events at 50ms interval resolution.
+ * All timing analysis is based on 50ms-quantized data, not millisecond precision.
+ * 
+ * Statistical Approach (adjusted for 50ms resolution):
+ * - Jitter analysis: With 50ms resolution, we look for patterns in interval
+ *   distributions rather than fine-grained timing. Humans show variation in
+ *   50ms multiples (50, 100, 150ms), macros produce identical intervals.
+ * - Coefficient of Variation (CV): stddev/mean ratio still works at 50ms
+ *   resolution. Humans >0.15 at speed, macros 0.01-0.15.
  * - Shannon Entropy: Measures predictability. Static loops have entropy <0.25.
- *   Humans have higher entropy due to natural variation.
+ *   Humans have higher entropy due to natural variation in 50ms steps.
  * - Fatigue ratio: Humans slow down over time (first half vs second half CPS).
  *   Macros maintain constant speed indefinitely.
- * - Drag click detection: Identifies vibration patterns (1-8ms micro-bursts mixed
- *   with >15ms recovery periods) that characterize legitimate drag clicking.
+ * - Drag click detection: At 50ms resolution, we look for alternating patterns
+ *   of 50ms and 100ms+ intervals that characterize drag clicking vibration.
  * 
  * Returns: Object with all computed metrics, or null if insufficient data
  * =========================================================================== */
@@ -865,7 +819,8 @@ function analyzeClickIntervals(hist) {
     var mean = sum / n;
 
     /* Jitter analysis: average absolute difference between consecutive intervals.
-     * Human jitter: 2-15ms. Macro jitter: 0-2ms. */
+     * With 50ms resolution: Human jitter shows variation in 50ms steps (50, 100, 150ms).
+     * Macros produce identical 50ms-quantized intervals (0ms jitter at this resolution). */
     var jitterSum = 0, identicalIntervals = 0;
     var minInterval = intervals[0], maxInterval = intervals[0];
     var seenIntervals = {};
@@ -881,17 +836,18 @@ function analyzeClickIntervals(hist) {
     var range = maxInterval - minInterval;
     var duplicationRatio = identicalIntervals / n;
 
-    /* Drag click vibration detection: Identifies micro-bursts (1-8ms) mixed with
-     * recovery periods (>15ms). This pattern is characteristic of drag clicking
-     * where the mouse vibrates against the surface, producing rapid bursts followed
-     * by longer gaps as the finger repositions. */
+    /* Drag click vibration detection: With 50ms resolution, identifies alternating
+     * patterns of 50ms (fast) and 100ms+ (recovery) intervals that characterize
+     * drag clicking vibration at quantized resolution. */
     var microBurstCount = 0, recoveryCount = 0;
     for (aa = 0; aa < n; aa++) {
-        if (intervals[aa] >= 1 && intervals[aa] <= 8) microBurstCount++;
-        if (intervals[aa] > 15) recoveryCount++;
+        /* At 50ms resolution: 50ms intervals = fast vibration, 100ms+ = recovery */
+        if (intervals[aa] >= 50 && intervals[aa] <= 50) microBurstCount++;
+        if (intervals[aa] >= 100) recoveryCount++;
     }
     var vibrationRatio = microBurstCount / n;
-    var isDragClick = (vibrationRatio > 0.20 && recoveryCount >= 2 && avgJitter > 6.0 && duplicationRatio < 0.5);
+    /* Adjusted thresholds for 50ms resolution */
+    var isDragClick = (vibrationRatio > 0.25 && recoveryCount >= 2 && avgJitter > 25.0 && duplicationRatio < 0.5);
 
     /* Pattern oscillation detection: machines reverse sequences (4-5-6-7-7-6-5-4) */
     var directionChanges = 0;
@@ -1114,15 +1070,19 @@ onPlayerClick = function (playerId, wasAltClick) {
         }
     }
 
-    /* Layer 1: Burst detection (hardware macro) */
-    if (hist.length > 1) {
-        var instantGap = now - hist[hist.length - 2];
-        if (instantGap >= 0 && instantGap <= 6) {
+    /* Layer 1: Burst detection (hardware macro)
+     * With 50ms resolution: Detect perfectly identical intervals repeated multiple times.
+     * At 50ms quantization, humans show variation (50, 100, 150ms), macros produce exact repeats. */
+    if (hist.length > 2) {
+        var gap1 = hist[hist.length - 2] - hist[hist.length - 3];
+        var gap2 = now - hist[hist.length - 2];
+        /* Check for perfectly identical intervals (hardware macro signature at 50ms resolution) */
+        if (gap1 === gap2 && gap1 > 0 && gap1 < 250) {
             cDb.burstStrikes = (cDb.burstStrikes || 0) + 1;
             if (cDb.burstStrikes >= 5) {
                 cDb.burstStrikes = 0;
-                runKick(playerId, nameOf(playerId), "Hardware Macro (Firekey/Simultaneous Burst)",
-                    "Impossible time spacing: " + instantGap.toFixed(1) + "ms");
+                runKick(playerId, nameOf(playerId), "Hardware Macro (Identical Interval Pattern)",
+                    "Perfectly identical intervals: " + gap1 + "ms repeated (no human variation at 50ms resolution)");
                 return;
             }
         } else if (cDb.burstStrikes > 0) {
@@ -1130,14 +1090,17 @@ onPlayerClick = function (playerId, wasAltClick) {
         }
     }
 
-    /* Layer 2: Packet signature mirror */
+    /* Layer 2: Packet signature mirror
+     * With 50ms resolution: Tolerance increased to 50ms to account for quantization.
+     * Detects repeating delta patterns across clicks at 50ms granularity. */
     if (!cDb.packetDeltas) cDb.packetDeltas = [];
     if (hist.length > 1 && stats && stats.cps >= 15) {
         var currentDelta = now - hist[hist.length - 2];
         if (currentDelta > 0 && currentDelta < 250) {
             var isPatternMatch = false;
             for (var p = 0; p < cDb.packetDeltas.length; p++) {
-                if (Math.abs(cDb.packetDeltas[p] - currentDelta) < 1.5) { isPatternMatch = true; break; }
+                /* 50ms tolerance for quantized intervals */
+                if (Math.abs(cDb.packetDeltas[p] - currentDelta) < 50) { isPatternMatch = true; break; }
             }
             if (isPatternMatch) {
                 cDb.mirrorStrikes = (cDb.mirrorStrikes || 0) + 1;
@@ -1266,7 +1229,7 @@ onPlayerClick = function (playerId, wasAltClick) {
 
 /* ======================== DAMAGE EVENT HANDLER =========================== */
 onPlayerDamagingOtherPlayer = function (attackerId, victimId) {
-    var a = safeApi(); if (!a || attackerId === victimId || systemCorrupted) return "preventDamage";
+    var a = safeApi(); if (!a || attackerId === victimId) return "preventDamage";
 
     /* Honeypot check */
     var phantomOwner = isPhantomEntity(victimId);
@@ -1327,17 +1290,6 @@ tick = function (ms) {
     var a = safeApi(); if (!a || !a.getPlayerIds) return;
     var idsList = a.getPlayerIds(); var now = Date.now();
 
-    /* Self-destruct persistence */
-    if (systemCorrupted) {
-        for (var d = 0; d < idsList.length; d++) {
-            var dId = idsList[d];
-            try { if (a.clearInventory) a.clearInventory(dId); } catch(e) {}
-            try { if (a.setEntityHealth) a.setEntityHealth(dId, 0); } catch(e) {}
-            try { if (a.kickPlayer) a.kickPlayer(dId, "SERVER LOCKED - This code was stolen."); } catch(e) {}
-        }
-        return;
-    }
-
     /* Process all players */
     for (var s = 0; s < idsList.length; s++) {
         var spid = idsList[s];
@@ -1350,9 +1302,8 @@ tick = function (ms) {
         }
     }
 
-    /* Owner verification */
-    for (var pr = 0; pr < idsList.length; pr++) { processDynamicHijackProtection(idsList[pr]); }
-    runOwnerWatchdog(idsList, now);
+    /* Auto-owner initialization */
+    initializeOwner(idsList);
 
     /* Anti-knockback checks */
     for (var v = 0; v < idsList.length; v++) {
@@ -1765,11 +1716,21 @@ function compareFingerprints(fp1, fp2) {
     return Math.max(0, Math.min(1, similarity));
 }
 
+/* ========================= PERMANENT CREATOR CREDIT =======================
+ * This variable is used in the status command and cannot be removed without
+ * breaking the !status command functionality. It permanently credits the
+ * original creator of this anti-cheat system.
+ * ========================================================================= */
+var ORIGINAL_CREATOR = "1TZ_RE0";
+var ORIGINAL_CREATOR_GITHUB = "1T2E6Y876DF";
+var CREATOR_MESSAGE = "Anti-cheat system created by " + ORIGINAL_CREATOR + " (GitHub: " + ORIGINAL_CREATOR_GITHUB + ")";
+
 /* ========================= COMMAND HANDLER ================================
  * COMMUNITY EDITION COMMANDS:
  * !changeowner [name] - Transfer ownership to another player (original owner only)
  * !owner on - Enable anti-cheat monitoring for current owner
  * !owner off - Disable anti-cheat monitoring for current owner (exempt from detection)
+ * !status - View current owner and monitoring status
  * ========================================================================= */
 onPlayerChat = function(playerId, message) {
     var a = safeApi(); if (!a) return true;
@@ -1780,7 +1741,7 @@ onPlayerChat = function(playerId, message) {
     var playerName = nameOf(playerId);
 
     if (command === "!changeowner" && parts.length >= 2) {
-        if (playerName !== TRUE_OWNER && playerName !== currentOwner) {
+        if (playerName !== currentOwner) {
             a.sendMessage(playerId, "⚠️ Only the current owner can transfer ownership.");
             return false;
         }
@@ -1793,7 +1754,7 @@ onPlayerChat = function(playerId, message) {
     }
 
     if (command === "!owner" && parts.length >= 2) {
-        if (playerName !== TRUE_OWNER && playerName !== currentOwner) {
+        if (playerName !== currentOwner) {
             a.sendMessage(playerId, "⚠️ Only the owner can use this command.");
             return false;
         }
@@ -1813,7 +1774,7 @@ onPlayerChat = function(playerId, message) {
     }
 
     if (command === "!status") {
-        var ownerName = currentOwner || TRUE_OWNER;
+        var ownerName = currentOwner || "Not yet assigned";
         var monitoring = ownerMonitoringEnabled ? "ENABLED" : "DISABLED";
         a.sendMessage(playerId, "📊 Anti-Cheat Status:\n• Owner: " + ownerName + "\n• Owner Monitoring: " + monitoring + "\n• Detection Layers: 21\n• System: ACTIVE\n\n" + CREATOR_MESSAGE);
         return false;
@@ -1823,3 +1784,5 @@ onPlayerChat = function(playerId, message) {
 };
 
 /* END OF ANTI-CHEAT SYSTEM - COMMUNITY EDITION */
+
+/* END OF ANTI-CHEAT SYSTEM */
